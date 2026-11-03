@@ -1,11 +1,14 @@
 #!/usr/bin/env Rscript
-# Alta snowmaking dashboard (physics-only version, no ML).
+# Snowmaking dashboard (Alta or Brighton, set by SNOW_SITE) (physics-only version, no ML).
 # Pull GFS + HRRR from Open-Meteo -> wet-bulb temperature at altitude -> quality score -> static HTML.
 
 suppressPackageStartupMessages({ library(httr); library(jsonlite) })
 
 # ---- config ---------------------------------------------------------------
-LAT <- 40.58083; LON <- -111.63722
+SITE <- Sys.getenv("SNOW_SITE", "alta")   # alta (default) or brighton
+SITES <- list(alta = list(name = "Alta", lat = 40.58083, lon = -111.63722),
+              brighton = list(name = "Brighton", lat = 40.593974, lon = -111.579126))
+SITE_NAME <- SITES[[SITE]]$name; LAT <- SITES[[SITE]]$lat; LON <- SITES[[SITE]]$lon
 TZ  <- "America/Denver"
 MODELS <- c(hrrr = "gfs_hrrr", gfs = "gfs_global")   # HRRR is preferred where it exists (~48 h); gfs_seamless is HRRR-blended, so not used
 ELEV_M <- Sys.getenv("SNOW_ELEV_M", "")                 # optional: downscale to a specific elevation (m)
@@ -34,7 +37,7 @@ fetch_forecast <- function() {
             temperature_unit = "fahrenheit", wind_speed_unit = "mph", forecast_days = 7)
   if (nzchar(ELEV_M)) q$elevation <- ELEV_M
   r <- GET("https://api.open-meteo.com/v1/forecast", query = q,
-           user_agent("alta-snowmaking (R)"), timeout(30))
+           user_agent("snowmaking (R)"), timeout(30))
   stop_for_status(r)
   j <- fromJSON(content(r, "text", encoding = "UTF-8"))
   h <- j$hourly
@@ -156,7 +159,7 @@ tiles <- paste0(
 
 html <- r"---(<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Alta Snowmaking Outlook</title>
+<title>__NAME__ Snowmaking Outlook</title>
 <style>
 :root{--bg:#f6f8fa;--card:#fff;--ink:#1b2630;--dim:#5b6b79;--line:#d9e0e6;
  --ex:#0b3c8a;--go:#3b82c4;--ma:#bfd7ec;--no:#eceff2}
@@ -198,7 +201,7 @@ table.rc{width:100%;table-layout:fixed;border-spacing:1px;font-size:10.5px}
 .rc td{min-width:0;height:17px;border-radius:2px}
 #pop .lg{max-width:none;margin-top:8px}
 </style></head><body><main>
-<h1>Alta Snowmaking Outlook</h1>
+<h1>__NAME__ Snowmaking Outlook</h1>
 <div class="sub">Generated __GEN__ &middot; Open-Meteo HRRR (to ~48 h) then GFS &middot; model elevation __ELEV__</div>
 <div class="disc"><b>Experimental product.</b> Under continuous development; for informational use only.</div>
 <div class="tiles">__TILES__</div>
@@ -210,7 +213,7 @@ __LEGEND__
 <div class="card"><h2>Model comparison</h2><canvas id="ch"></canvas>
 <div class="note">Wet-bulb computed from temperature, relative humidity and surface pressure. HRRR covers about 48 h; GFS covers the full period. Background shading uses the same colors and bands as the legend above. Hover for temperature, humidity and wind (shown, not scored).</div></div>
 <div id="pop"><div id="popHd"><b>Wet-bulb temperature (&deg;F) by air temperature and relative humidity</b></div><table class="rc">__RCHEAD____RCROWS__</table>__LEGEND__
-<div class="note">Computed at Alta's pressure (__PREF__ hPa); at this elevation wet-bulb runs 1&ndash;2&deg;F colder than a sea-level chart.</div></div>
+<div class="note">Computed at __NAME__'s pressure (__PREF__ hPa); at this elevation wet-bulb runs 1&ndash;2&deg;F colder than a sea-level chart.</div></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script>
 const D=__DATA__;
@@ -263,6 +266,7 @@ new Chart(document.getElementById('ch'),{type:'line',data:{labels:D.labels,datas
 </script></main></body></html>)---"
 
 rep <- function(s, k, v) gsub(k, gsub("\\", "\\\\", v, fixed = TRUE), s, fixed = TRUE)
+html <- rep(html, "__NAME__", SITE_NAME)
 html <- rep(html, "__GEN__", format(Sys.time(), "%b %d %H:%M %Z", tz = TZ))
 html <- rep(html, "__ELEV__", sprintf("%.0f ft", fc$elev_m * 3.281))
 leg_vals <- c(11, 12, 14, 16, 18:27, 28, 29)
@@ -284,6 +288,6 @@ html <- rep(html, "__PREF__", as.character(p_ref))
 html <- rep(html, "__SCALE__", toJSON(as.list(SCALE), auto_unbox = TRUE))
 html <- rep(html, "__GRAD__",paste(unname(SCALE), collapse = ","))
 html <- rep(html, "__DATA__", toJSON(chart, auto_unbox = TRUE, na = "null"))
-out <- file.path(OUT_DIR, "snowmaking.html")
+out <- file.path(OUT_DIR, paste0(SITE, ".html"))
 writeLines(html, out, useBytes = TRUE)
 message("Report: ", out)

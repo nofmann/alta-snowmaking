@@ -1,4 +1,4 @@
-name: Alta snowmaking
+name: Snowmaking dashboards
 
 on:
   schedule:
@@ -29,11 +29,16 @@ jobs:
         with:
           packages: any::httr any::jsonlite
 
-      - name: Pull forecasts and build dashboard
-        run: Rscript snowmaking.R
+      - name: Pull forecasts and build dashboards
+        run: |
+          SNOW_SITE=alta Rscript snowmaking.R
+          SNOW_SITE=brighton Rscript snowmaking.R
 
       - name: Prepare site
-        run: cp output/snowmaking.html output/index.html
+        run: |
+          cp output/alta.html output/index.html
+          mkdir -p output/brighton
+          cp output/brighton.html output/brighton/index.html
 
       - uses: actions/upload-pages-artifact@v3
         with:
