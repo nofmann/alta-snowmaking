@@ -1,0 +1,50 @@
+name: Alta snowmaking
+
+on:
+  schedule:
+    # 6 pulls/day, every 4 hours (UTC clock; GitHub may start a run a few minutes late)
+    - cron: "17 1,5,9,13,17,21 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: snowmaking
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          packages: any::httr any::jsonlite
+
+      - name: Pull forecasts and build dashboard
+        run: Rscript snowmaking.R
+
+      - name: Prepare site
+        run: cp output/snowmaking.html output/index.html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: output
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
