@@ -1,4 +1,4 @@
-# Snowmaking Outlook (Alta, Brighton)
+# Alta Snowmaking Outlook
 
 Experimental dashboard showing hourly wet-bulb temperature for Alta, the main driver of snowmaking
 conditions, from Open-Meteo HRRR (about 48 h) and GFS (7 days) forecasts. Wet-bulb is computed from
@@ -7,11 +7,10 @@ temperature, relative humidity and surface pressure, so it accounts for Alta's e
 ## Run locally
 
 ```
-Rscript snowmaking.R                    # Alta
-SNOW_SITE=brighton Rscript snowmaking.R   # Brighton
+Rscript snowmaking.R
 ```
 
-Needs R with the `httr` and `jsonlite` packages. Writes `output/alta.html` or `output/brighton.html`. Live pages: `/` (Alta) and `/brighton/`.
+Needs R with the `httr` and `jsonlite` packages. Writes `output/snowmaking.html`.
 
 ## Hosting
 
