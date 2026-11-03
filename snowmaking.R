@@ -147,8 +147,28 @@ rc_rows <- vapply(RC_T, function(tt) {
 rc_head <- paste0("<tr><th>&deg;F</th>", paste0("<th>", RC_RH, "%</th>", collapse = ""), "</tr>")
 
 tile <- function(label, value, sub) sprintf("<div class='tile'><div class='tl'>%s</div><div class='tv'>%s</div><div class='ts'>%s</div></div>", label, value, sub)
+# ---- latest observation (Alta Hourly Wx Roundup, via the roundup_scraper repo) -------------
+OBS_URL <- "https://raw.githubusercontent.com/nofmann/roundup_scraper/main/data/alta_hourly.csv"
+std_p_hpa <- function(ft) 1013.25 * (1 - 2.25577e-5 * ft * 0.3048)^5.25588   # standard-atmosphere station pressure
+obs <- tryCatch({
+  o <- read.csv(OBS_URL, stringsAsFactors = FALSE)
+  o <- o[!is.na(o$temp_8550) & !is.na(o$rh_8550), ]
+  o <- o[nrow(o), ]
+  o$t <- as.POSIXct(o$datetime, tz = TZ)
+  o
+}, error = function(e) { message("Observation fetch failed: ", conditionMessage(e)); NULL })
+obs_tile <- function(ft, tcol, rhcol) {
+  if (is.null(obs) || is.na(obs[[tcol]]) || is.na(obs[[rhcol]])) return("")
+  wb <- wetbulb_f(obs[[tcol]], obs[[rhcol]], std_p_hpa(ft))
+  age <- as.numeric(difftime(Sys.time(), obs$t, units = "hours"))
+  stale <- if (age > 3) sprintf(" &middot; <b>%.0f h old</b>", age) else ""
+  tile(sprintf("Observed wet-bulb, %s ft", format(ft, big.mark = ",")), sprintf("%.0f&deg;F", wb),
+       sprintf("%s &middot; temp %.0f&deg;F, RH %.0f%% &middot; hour ending %s%s", quality(wb), obs[[tcol]], obs[[rhcol]],
+               format(obs$t, "%a %H:%M"), stale))
+}
 tiles <- paste0(
-  tile("Wet-bulb now", sprintf("%.0f&deg;F", now_row$wb), sprintf("%s &middot; temp %.0f&deg;F, RH %.0f%%", now_row$class, now_row$temp_f, now_row$rh)),
+  obs_tile(8550, "temp_8550", "rh_8550"), obs_tile(10500, "temp_10500", "rh_10500"),
+  tile("Forecast wet-bulb now", sprintf("%.0f&deg;F", now_row$wb), sprintf("%s &middot; temp %.0f&deg;F, RH %.0f%%", now_row$class, now_row$temp_f, now_row$rh)),
   tile("Next 24 hours", sprintf("%d of %d", good_plus(w24), nrow(w24)), "hours with wet-bulb 27&deg;F or colder"),
   tile("Next 72 hours", sprintf("%d of %d", good_plus(w72), nrow(w72)), "hours with wet-bulb 27&deg;F or colder"),
   tile("Best hour, next 72 h", sprintf("%.0f&deg;F", bst$wb), sprintf("%s %02d:00 &middot; %s", day_label(bst$date), bst$hour, bst$src))
