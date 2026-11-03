@@ -10,9 +10,8 @@ TZ  <- "America/Denver"
 MODELS <- c(hrrr = "gfs_hrrr", gfs = "gfs_global")   # HRRR is preferred where it exists (~48 h); gfs_seamless is HRRR-blended, so not used
 ELEV_M <- Sys.getenv("SNOW_ELEV_M", "")                 # optional: downscale to a specific elevation (m)
 
-# Color scale and band names follow the Snow State wet-bulb chart (snow-state.com/snowmaking-charts).
-# Colors are one per whole degree F, sampled from that chart; 11 and below share one color, 29 and above another.
-# Band cutoffs (upper wet-bulb value, whole deg F) are inferred from where the chart places its labels; edit to suit.
+# Color scale: one color per whole degree F wet-bulb; 11 and below share one color, 29 and above another.
+# Band cutoffs (upper wet-bulb value, whole deg F) are judgment calls; edit to suit your guns and water.
 SCALE <- c("11" = "#E463FF", "12" = "#D560FF", "13" = "#D35FFF", "14" = "#B658FF", "15" = "#B157FF",
            "16" = "#9750FF", "17" = "#8F4EFF", "18" = "#7849FF", "19" = "#6845FF", "20" = "#5941FF",
            "21" = "#493DFF", "22" = "#3939FF", "23" = "#525AFF", "24" = "#6B7BFF", "25" = "#859DFF",
@@ -95,8 +94,6 @@ best <- rbind(hr, gf[!gf$time %in% hr$time, ])
 best <- best[order(best$time), ]
 best$src <- toupper(best$model)
 best$date <- substr(best$time, 1, 10); best$hour <- as.integer(substr(best$time, 12, 13))
-best$i <- seq_len(nrow(best)) - 1L   # index into the hover-popup data
-
 now_str <- format(Sys.time(), "%Y-%m-%dT%H:00", tz = TZ)
 fut <- best[best$time >= now_str, ]
 good_plus <- function(x) sum(round(x$wb) <= SNOWMAKING_MAX, na.rm = TRUE)   # hours at Marginal or better
@@ -119,7 +116,7 @@ strip_rows <- vapply(unique(best$date), function(dt) {
     if (!nrow(r)) return("<td class='c-na'></td>")
     past <- if (r$time < now_str) " past" else ""
     bg <- scale_color(r$wb)
-    sprintf("<td class='cell%s' data-i='%d' style='background:%s;color:%s'>%s</td>", past, r$i, bg, text_color(bg), round(r$wb))
+    sprintf("<td class='cell%s' style='background:%s;color:%s'>%s</td>", past, bg, text_color(bg), round(r$wb))
   }, "")
   ok <- x[x$time >= now_str, ]
   summ <- if (nrow(ok)) sprintf("%d h", good_plus(ok)) else "&ndash;"
@@ -135,11 +132,7 @@ chart <- list(
   gfs = d$wb[gi], gfs_t = d$temp_f[gi], gfs_rh = d$rh[gi], gfs_w = d$wind_mph[gi]
 )
 
-# per-cell details for the hover popup
-info <- list(l = sprintf("%s %02d:00", day_label(best$date), best$hour), s = best$src, c = best$class,
-             wb = best$wb, t = best$temp_f, rh = best$rh, w = best$wind_mph)
-
-# Reference chart (temp x RH -> wet-bulb), same layout as the Snow State chart but computed at Alta's pressure.
+# Reference chart (temp x RH -> wet-bulb), computed at Alta's pressure.
 RC_T <- 14:38; RC_RH <- seq(20, 100, 5)
 p_ref <- round(median(best$p_hpa, na.rm = TRUE))
 g <- expand.grid(t = RC_T, rh = RC_RH)
@@ -171,7 +164,8 @@ html <- r"---(<!doctype html><html lang="en"><head><meta charset="utf-8">
  --ex:#0b3c8a;--go:#3b82c4;--ma:#2b4a66;--no:#222d37}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,Segoe UI,sans-serif}
 main{max-width:1100px;margin:0 auto;padding:20px 16px 40px}
-h1{margin:0 0 2px;font-size:22px}.sub{color:var(--dim);margin-bottom:16px}
+h1{margin:0 0 2px;font-size:22px}.sub{color:var(--dim);margin-bottom:6px}
+.disc{color:var(--dim);font-size:12px;margin-bottom:16px}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin-bottom:18px}
 .tile{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px}
 .tl{color:var(--dim);font-size:12px}.tv{font-size:28px;font-weight:600}.ts{color:var(--dim);font-size:12px}
@@ -189,65 +183,83 @@ td.hd{background:none;color:var(--dim);height:auto}
 .lg .lab{font-weight:600;font-size:12px;padding:6px 2px 0;color:var(--ink)}
 .note{color:var(--dim);font-size:12px;margin-top:8px}
 canvas{max-height:320px}
-td.cell{cursor:default}
+.stripwrap{display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap}
+.stripwrap .scroll{flex:1 1 640px;min-width:0}
+.stripwrap .scroll td{min-width:25px}
+#refTile{flex:0 0 160px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;cursor:help;outline:none}
+#refTile:hover,#refTile:focus{border-color:var(--dim)}
+#refTile b{font-size:13px}.rtBar{height:14px;border-radius:3px;margin:8px 0;background:linear-gradient(90deg,__GRAD__)}
+#refTile .ts{font-size:12px}
 #pop{position:fixed;display:none;z-index:10;pointer-events:none;width:min(640px,calc(100vw - 16px));
  background:var(--card);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.3);padding:10px 12px}
 #popHd{font-size:13px;line-height:1.5;margin-bottom:6px}
 table.rc{width:100%;table-layout:fixed;border-spacing:1px;font-size:10.5px}
 .rc th{text-align:center;padding:0;font-weight:600;color:var(--dim)}
 .rc td{min-width:0;height:17px;border-radius:2px}
-.rc td.hl{outline:3px solid var(--ink);outline-offset:-1px;box-shadow:0 0 0 2px var(--card);position:relative;z-index:1;font-weight:700}
 #pop .lg{max-width:none;margin-top:8px}
 </style></head><body><main>
 <h1>Alta Snowmaking Outlook</h1>
 <div class="sub">Generated __GEN__ &middot; Open-Meteo HRRR (to ~48 h) then GFS &middot; model elevation __ELEV__</div>
+<div class="disc"><b>Experimental product.</b> Under continuous development; for informational use only.</div>
 <div class="tiles">__TILES__</div>
 <div class="card"><h2>Hourly wet-bulb temperature (&deg;F) &mdash; hour of day across, hours colored by snowmaking quality</h2>
-<div class="scroll"><table id="strip"><tr><td class="hd"></td>__HDR__<td class="hd">Hours<br>&le;27&deg;F</td></tr>__ROWS__</table></div>
+<div class="stripwrap"><div class="scroll"><table><tr><td class="hd"></td>__HDR__<td class="hd">Hours<br>&le;27&deg;F</td></tr>__ROWS__</table></div>
+<div id="refTile" tabindex="0"><b>Wet-bulb reference chart</b><div class="rtBar"></div><div class="ts">Temperature &times; humidity. Hover or tap to open.</div></div></div>
 __LEGEND__
-<div class="note">Hover (or tap) an hour to see its conditions and where it falls on the temperature / humidity chart. The last column counts upcoming hours at 27&deg;F wet-bulb or colder. Faded cells are already past. Colors and band names follow the Snow State wet-bulb chart (snow-state.com).</div></div>
+<div class="note">The last column counts upcoming hours at 27&deg;F wet-bulb or colder. Faded cells are already past.</div></div>
 <div class="card"><h2>Model comparison</h2><canvas id="ch"></canvas>
-<div class="note">Wet-bulb computed from temperature, relative humidity and surface pressure. HRRR covers about 48 h; GFS covers the full period. Hover for temperature, humidity and wind (shown, not scored).</div></div>
-<div id="pop"><div id="popHd"></div><table class="rc">__RCHEAD____RCROWS__</table>__LEGEND__
-<div class="note">Temperature / humidity chart at Alta's pressure (__PREF__ hPa). Snow State's chart is at sea level, so its values run 1&ndash;2&deg;F warmer. The outlined cell is the hovered hour, with temp and RH rounded to the chart's grid.</div></div>
+<div class="note">Wet-bulb computed from temperature, relative humidity and surface pressure. HRRR covers about 48 h; GFS covers the full period. Background shading uses the same colors and bands as the legend above. Hover for temperature, humidity and wind (shown, not scored).</div></div>
+<div id="pop"><div id="popHd"><b>Wet-bulb temperature (&deg;F) by air temperature and relative humidity</b></div><table class="rc">__RCHEAD____RCROWS__</table>__LEGEND__
+<div class="note">Computed at Alta's pressure (__PREF__ hPa); at this elevation wet-bulb runs 1&ndash;2&deg;F colder than a sea-level chart.</div></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script>
-const D=__DATA__, I=__INFO__;
-const pop=document.getElementById('pop'), hd=document.getElementById('popHd');
-let hl=null;
-const BAND={'Great':'Great Snowmaking','Good':'Good Snowmaking','Marginal':'Marginal Snowmaking','Borderline':'Borderline','Too warm':'Too Warm'};
+const D=__DATA__;
+// reference-chart popup: opens on hover/focus of the tile (mouse), or tap to toggle (touch)
+const pop=document.getElementById('pop'), tile=document.getElementById('refTile');
 function hide(){pop.style.display='none';}
-function show(td){
-  const i=+td.dataset.i, t=I.t[i], rh=I.rh[i];
-  const tr=Math.min(38,Math.max(14,Math.round(t))), rr=Math.min(100,Math.max(20,Math.round(rh/5)*5));
-  if(hl) hl.classList.remove('hl');
-  hl=pop.querySelector('.rc td[data-t="'+tr+'"][data-rh="'+rr+'"]'); if(hl) hl.classList.add('hl');
-  const off=(t<13.5||t>38.5||rh<18)?' <span style="color:var(--dim)">(outside the chart range; nearest cell outlined)</span>':'';
-  hd.innerHTML='<b>'+I.l[i]+'</b> &middot; '+I.s[i]+' &middot; '+BAND[I.c[i]]+'<br>Wet-bulb <b>'+I.wb[i].toFixed(1)+'&deg;F</b> &middot; temp '+Math.round(t)+'&deg;F &middot; RH '+Math.round(rh)+'% &middot; wind '+Math.round(I.w[i])+' mph'+off;
+function show(){
   pop.style.display='block';
-  const r=td.getBoundingClientRect(), w=pop.offsetWidth, h=pop.offsetHeight;
-  pop.style.left=Math.max(8,Math.min(r.left+r.width/2-w/2,innerWidth-w-8))+'px';
+  const r=tile.getBoundingClientRect(), w=pop.offsetWidth, h=pop.offsetHeight;
+  pop.style.left=Math.max(8,Math.min(r.right-w,innerWidth-w-8))+'px';
   let y=r.bottom+8; if(y+h>innerHeight-8) y=Math.max(8,r.top-h-8);
   pop.style.top=y+'px';
 }
-const strip=document.getElementById('strip');
-strip.addEventListener('mouseover',e=>{const td=e.target.closest('td.cell'); if(td) show(td);});
-strip.addEventListener('mouseleave',hide);
-document.addEventListener('click',e=>{const td=e.target.closest('td.cell'); if(td) show(td); else hide();});
+if(matchMedia('(hover: hover)').matches){
+  tile.addEventListener('mouseenter',show); tile.addEventListener('mouseleave',hide);
+  tile.addEventListener('focus',show); tile.addEventListener('blur',hide);
+}else{
+  tile.addEventListener('click',e=>{e.stopPropagation(); pop.style.display==='block'?hide():show();});
+  document.addEventListener('click',hide);
+}
 addEventListener('scroll',hide,{passive:true});
 const dark=matchMedia('(prefers-color-scheme: dark)').matches, tc=dark?'#93a3b1':'#5b6b79', gc=dark?'#2c3945':'#e3e8ed';
-const ref=v=>({data:D.labels.map(()=>v),borderColor:'#8a97a3',borderDash:[5,4],borderWidth:1,pointRadius:0,label:v+'°F',ref:true});
+// background shading: one stripe per whole degree F in the same colors as the legend above, plus band names
+const SC=__SCALE__;
+const BANDS=[['Great',-99,17.5],['Good',17.5,22.5],['Marginal',22.5,27.5],['Borderline',27.5,28.5],['Too warm',28.5,99]];
+const bands={id:'bands',beforeDraw(c){
+  const {ctx,chartArea:a,scales:{y}}=c; ctx.save();
+  for(let v=Math.floor(y.min);v<=Math.ceil(y.max);v++){
+    const top=Math.max(a.top,y.getPixelForValue(v+.5)), bot=Math.min(a.bottom,y.getPixelForValue(v-.5));
+    if(bot<=top) continue;
+    ctx.fillStyle=SC[Math.min(29,Math.max(11,v))]+(dark?'66':'59'); ctx.fillRect(a.left,top,a.right-a.left,bot-top);
+  }
+  ctx.restore();},
+ beforeDatasetsDraw(c){   // names go above the grid lines but under the data lines
+  const {ctx,chartArea:a,scales:{y}}=c; ctx.save();
+  ctx.font='600 11px system-ui,sans-serif'; ctx.textAlign='right'; ctx.textBaseline='middle'; ctx.fillStyle=dark?'#e6edf3':'#1b2630';
+  BANDS.forEach(([n,lo,hi])=>{const l=Math.max(lo,y.min),h=Math.min(hi,y.max); if(h<=l) return;
+    ctx.fillText(n,a.right-6,y.getPixelForValue(n==='Too warm'?y.max-1.5:(l+h)/2));});
+  ctx.restore();}};
 const tipLabel=c=>{const k=c.datasetIndex===0?'hrrr':'gfs',i=c.dataIndex;
  return [c.dataset.label+': '+c.parsed.y.toFixed(1)+'°F wet-bulb',
   '   temp '+Math.round(D[k+'_t'][i])+'°F · RH '+Math.round(D[k+'_rh'][i])+'% · wind '+Math.round(D[k+'_w'][i])+' mph'];};
 new Chart(document.getElementById('ch'),{type:'line',data:{labels:D.labels,datasets:[
  {label:'HRRR',data:D.hrrr,borderColor:'#0b3c8a',backgroundColor:'#0b3c8a',borderWidth:2,pointRadius:0,spanGaps:false},
  {label:'GFS',data:D.gfs,borderColor:'#e07a1f',backgroundColor:'#e07a1f',borderWidth:2,pointRadius:0},
- ref(28),ref(22)]},
+ ]},
  options:{animation:false,interaction:{mode:'index',intersect:false},
   scales:{x:{ticks:{color:tc,maxTicksLimit:14,maxRotation:0},grid:{color:gc}},y:{title:{display:true,text:'Wet-bulb (°F)',color:tc},ticks:{color:tc},grid:{color:gc}}},
-  plugins:{legend:{labels:{color:tc,filter:i=>!/°F$/.test(i.text)}},
-   tooltip:{filter:i=>!i.dataset.ref,callbacks:{label:tipLabel}}}}});
+  plugins:{legend:{labels:{color:tc}},tooltip:{callbacks:{label:tipLabel}}}},plugins:[bands]});
 </script></main></body></html>)---"
 
 rep <- function(s, k, v) gsub(k, gsub("\\", "\\\\", v, fixed = TRUE), s, fixed = TRUE)
@@ -269,7 +281,8 @@ html <- rep(html, "__ROWS__", paste(strip_rows, collapse = "\n"))
 html <- rep(html, "__RCHEAD__", rc_head)
 html <- rep(html, "__RCROWS__", paste(rc_rows, collapse = "\n"))
 html <- rep(html, "__PREF__", as.character(p_ref))
-html <- rep(html, "__INFO__", toJSON(info, auto_unbox = TRUE, na = "null", digits = NA))
+html <- rep(html, "__SCALE__", toJSON(as.list(SCALE), auto_unbox = TRUE))
+html <- rep(html, "__GRAD__",paste(unname(SCALE), collapse = ","))
 html <- rep(html, "__DATA__", toJSON(chart, auto_unbox = TRUE, na = "null"))
 out <- file.path(OUT_DIR, "snowmaking.html")
 writeLines(html, out, useBytes = TRUE)
