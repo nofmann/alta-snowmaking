@@ -274,7 +274,6 @@ h1{margin:0 0 2px;font-size:22px}.sub{color:var(--dim);margin-bottom:6px}
 .dim{opacity:.75}
 .badge{display:inline-block;vertical-align:middle;margin-left:6px;padding:2px 9px;border-radius:12px;font-size:12px;font-weight:700;letter-spacing:.03em;color:#fff;cursor:help}
 .b-go{background:#1a7f37}.b-off{background:#c62828}.b-wait{background:#8a5a00}.b-hold{background:#5b6b79}
-.rule{margin:-8px 0 18px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:18px}
 h2{font-size:15px;margin:0 0 10px}
 .scroll{overflow-x:auto}
@@ -308,7 +307,6 @@ table.rc{width:100%;table-layout:fixed;border-spacing:1px;font-size:10.5px}
 <div class="sub">Generated __GEN__ &middot; Open-Meteo HRRR (to ~48 h) then GFS &middot; model elevation __ELEV__ &middot; model data pulled __PULLED__</div>
 <div class="disc"><b>Experimental product.</b> Under continuous development; for informational use only.</div>
 <div class="tiles">__TILES__</div>
-<div class="note rule">__RULE__</div>
 <div class="card"><h2>Hourly wet-bulb temperature (&deg;F) &mdash; hour of day across, hours colored by snowmaking quality</h2>
 <div class="stripwrap"><div class="scroll"><table><tr><td class="hd"></td>__HDR__<td class="hd">Hours<br>&le;__SMAX__&deg;F</td></tr>__ROWS__</table></div>
 <div id="refTile" tabindex="0"><b>Wet-bulb reference chart</b><div class="rtBar"></div><div class="ts">Temperature &times; humidity. Hover or tap to open.</div></div></div>
@@ -374,11 +372,6 @@ html <- rep(html, "__GEN__", format(Sys.time(), "%b %d %H:%M %Z", tz = TZ))
 html <- rep(html, "__ELEV__", sprintf("%.0f ft", fc$elev_m * 3.281))
 html <- rep(html, "__PULLED__", format(fc$fetched, "%b %d %H:%M %Z", tz = TZ))
 html <- rep(html, "__SMAX__", as.character(SNOWMAKING_MAX))
-html <- rep(html, "__RULE__", sprintf(paste0(
-  "<b>Snowmaking rule:</b> <b>GO</b> at wet-bulb %d&deg;F or colder and falling &middot; <b>OFF</b> at %d&deg;F or warmer and rising &middot; ",
-  "otherwise HOLD (WAIT while still above %d&deg;F). Trend is the slope of the observed wet-bulb over the last %d hours ",
-  "(steady within &plusmn;%.2g&deg;F/hr). Observations and trend update hourly; model data is pulled every %g hours."),
-  RULE_GO, RULE_OFF, RULE_GO, TREND_HOURS, TREND_FLAT, REFRESH_H))
 leg_vals <- c(11, 12, 14, 16, 18:27, 28, 29)
 leg_txt  <- c("&le;11", leg_vals[2:14], "28", "29+")
 leg_cells <- vapply(seq_along(leg_vals), function(i) {
