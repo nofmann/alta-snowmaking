@@ -17,7 +17,17 @@ SCALE <- c("11" = "#E463FF", "12" = "#D560FF", "13" = "#D35FFF", "14" = "#B658FF
            "21" = "#493DFF", "22" = "#3939FF", "23" = "#525AFF", "24" = "#6B7BFF", "25" = "#859DFF",
            "26" = "#9EBEFF", "27" = "#B8E0FF", "28" = "#FFF2CC", "29" = "#FFB1B4")
 BANDS <- c(great = 17, good = 22, marginal = 27, borderline = 28)   # anything warmer is "Too warm"
-SNOWMAKING_MAX <- 27                                                 # "snowmaking hours" = wet-bulb at or below this
+SNOWMAKING_MAX <- 26                                                 # "snowmaking hours" = wet-bulb at or below this (whole deg F)
+
+# Snowmaking rule used by the snowmakers: GO at wet-bulb <= RULE_GO and falling; OFF at >= RULE_OFF and rising.
+# Whole-degree comparison (same rounding as the hourly table). Trend = least-squares slope of the observed
+# wet-bulb over the last TREND_HOURS hours; within +/- TREND_FLAT deg F per hour counts as steady.
+RULE_GO <- SNOWMAKING_MAX; RULE_OFF <- 25
+TREND_HOURS <- 3; TREND_FLAT <- 0.25
+
+# Model data is pulled every FORECAST_REFRESH_H hours and cached; hourly runs in between reuse the cache and
+# only refresh observations/trend. FORCE_FETCH=1 pulls regardless (e.g. when testing locally).
+REFRESH_H <- as.numeric(Sys.getenv("FORECAST_REFRESH_H", "4"))
 SCORE_X <- c(20, 24, 26, 28, 30); SCORE_Y <- c(100, 75, 50, 25, 0)
 
 script_dir <- local({
@@ -25,6 +35,7 @@ script_dir <- local({
   if (length(a)) dirname(normalizePath(sub("^--file=", "", a[1]))) else getwd()
 })
 OUT_DIR <- file.path(script_dir, "output"); dir.create(OUT_DIR, showWarnings = FALSE, recursive = TRUE)
+CACHE_PATH <- file.path(script_dir, "data", "forecast_cache.csv")
 
 # ---- fetch ----------------------------------------------------------------
 fetch_forecast <- function() {
@@ -46,6 +57,38 @@ fetch_forecast <- function() {
                wind_mph = col("wind_speed_10m"), stringsAsFactors = FALSE)
   })
   list(data = do.call(rbind, rows), elev_m = j$elevation)
+}
+
+# Forecast with a file cache: returns list(data, elev_m, fetched) where fetched is when the models were pulled.
+load_cache <- function() {
+  if (!file.exists(CACHE_PATH)) return(NULL)
+  tryCatch({
+    x <- read.csv(CACHE_PATH, stringsAsFactors = FALSE)
+    req <- x$elev_req[1]; req <- if (is.na(req)) "" else as.character(req)   # an empty setting reads back as NA
+    if (!identical(req, ELEV_M)) return(NULL)                                # cached for a different elevation setting
+    list(data = x[, c("time", "model", "temp_f", "rh", "p_hpa", "wind_mph")], elev_m = x$elev_m[1],
+         fetched = as.POSIXct(x$fetched_utc[1], tz = "UTC", format = "%Y-%m-%dT%H:%M:%SZ"))
+  }, error = function(e) NULL)
+}
+get_forecast <- function() {
+  cache <- load_cache()
+  age <- if (is.null(cache)) Inf else as.numeric(difftime(Sys.time(), cache$fetched, units = "hours"))
+  # 0.5 h of slack so a late-starting scheduled run doesn't push the pull out a whole extra hour
+  if (age < REFRESH_H - 0.5 && !nzchar(Sys.getenv("FORCE_FETCH"))) {
+    message(sprintf("Using cached model data (pulled %.1f h ago)", age)); return(cache)
+  }
+  fc <- tryCatch(fetch_forecast(), error = function(e) { message("Forecast fetch failed: ", conditionMessage(e)); NULL })
+  if (is.null(fc)) {
+    if (is.null(cache)) stop("No forecast available (fetch failed and no cache)")
+    message(sprintf("Using stale cached model data (%.1f h old)", age)); return(cache)
+  }
+  fc$fetched <- Sys.time()
+  out <- fc$data; out$elev_m <- fc$elev_m; out$elev_req <- ELEV_M
+  out$fetched_utc <- format(fc$fetched, "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+  dir.create(dirname(CACHE_PATH), showWarnings = FALSE, recursive = TRUE)
+  write.csv(out, CACHE_PATH, row.names = FALSE, na = "")
+  message("Pulled fresh model data")
+  fc
 }
 
 # ---- physics --------------------------------------------------------------
@@ -82,7 +125,7 @@ text_color <- function(hex) {
 }
 
 # ---- build ----------------------------------------------------------------
-fc <- fetch_forecast(); d <- fc$data
+fc <- get_forecast(); d <- fc$data
 d$wb    <- round(wetbulb_f(d$temp_f, d$rh, d$p_hpa), 1)
 d$score <- round(approx(SCORE_X, SCORE_Y, xout = d$wb, rule = 2)$y)
 d$class <- quality(d$wb)
@@ -96,7 +139,7 @@ best$src <- toupper(best$model)
 best$date <- substr(best$time, 1, 10); best$hour <- as.integer(substr(best$time, 12, 13))
 now_str <- format(Sys.time(), "%Y-%m-%dT%H:00", tz = TZ)
 fut <- best[best$time >= now_str, ]
-good_plus <- function(x) sum(round(x$wb) <= SNOWMAKING_MAX, na.rm = TRUE)   # hours at Marginal or better
+good_plus <- function(x) sum(round(x$wb) <= SNOWMAKING_MAX, na.rm = TRUE)   # hours at or below the snowmaking limit
 now_row <- fut[1, ]
 w24 <- fut[seq_len(min(24, nrow(fut))), ]; w72 <- fut[seq_len(min(72, nrow(fut))), ]
 bst <- w72[which.min(w72$wb), ]
@@ -146,31 +189,70 @@ rc_rows <- vapply(RC_T, function(tt) {
 }, "")
 rc_head <- paste0("<tr><th>&deg;F</th>", paste0("<th>", RC_RH, "%</th>", collapse = ""), "</tr>")
 
-tile <- function(label, value, sub) sprintf("<div class='tile'><div class='tl'>%s</div><div class='tv'>%s</div><div class='ts'>%s</div></div>", label, value, sub)
-# ---- latest observation (Alta Hourly Wx Roundup, via the roundup_scraper repo) -------------
+tile <- function(label, value, sub, badge = "") sprintf("<div class='tile'><div class='tl'>%s</div><div class='tv'>%s%s</div><div class='ts'>%s</div></div>", label, value, badge, sub)
+
+# ---- observations (Alta Hourly Wx Roundup, via the roundup_scraper repo) ------------------
+# The scraper updates hourly, so every hourly run of this script picks up the newest hour and its trend,
+# independent of the (cached) model data.
 OBS_URL <- "https://raw.githubusercontent.com/nofmann/roundup_scraper/main/data/alta_hourly.csv"
 std_p_hpa <- function(ft) 1013.25 * (1 - 2.25577e-5 * ft * 0.3048)^5.25588   # standard-atmosphere station pressure
-obs <- tryCatch({
+obs_all <- tryCatch({
   o <- read.csv(OBS_URL, stringsAsFactors = FALSE)
-  o <- o[!is.na(o$temp_8550) & !is.na(o$rh_8550), ]
-  o <- o[nrow(o), ]
   o$t <- as.POSIXct(o$datetime, tz = TZ)
-  o
+  o[order(o$t), ]
 }, error = function(e) { message("Observation fetch failed: ", conditionMessage(e)); NULL })
+
+# Latest observed wet-bulb at one level, plus its trend (deg F per hour) over the last TREND_HOURS hours.
+obs_level <- function(ft, tcol, rhcol) {
+  if (is.null(obs_all)) return(NULL)
+  o <- obs_all[!is.na(obs_all[[tcol]]) & !is.na(obs_all[[rhcol]]), ]
+  o <- tail(o, TREND_HOURS + 1)
+  if (!nrow(o)) return(NULL)
+  wb <- wetbulb_f(o[[tcol]], o[[rhcol]], std_p_hpa(ft))
+  h  <- as.numeric(difftime(o$t, max(o$t), units = "hours"))      # 0 = latest, negative = earlier
+  k  <- h >= -TREND_HOURS - 1e-6                                  # drop points across a gap
+  slope <- if (sum(k) >= 2) cov(h[k], wb[k]) / var(h[k]) else NA_real_
+  n <- nrow(o)
+  list(t = o$t[n], wb = wb[n], temp = o[[tcol]][n], rh = o[[rhcol]][n], slope = slope, npts = sum(k))
+}
+
+trend_dir <- function(slope) if (is.na(slope)) NA_character_ else if (slope <= -TREND_FLAT) "falling" else if (slope >= TREND_FLAT) "rising" else "steady"
+
+# The snowmakers' rule as a signal for the latest hour: GO / OFF / HOLD / WAIT (STALE when the data is old).
+rule_signal <- function(wb, dir, age_h = 0) {
+  if (is.na(wb)) return(list(label = "NO DATA", cls = "b-hold", tip = "No wet-bulb value"))
+  if (age_h > 3) return(list(label = "STALE", cls = "b-hold", tip = "Latest observation is more than 3 hours old"))
+  w <- round(wb)
+  if (is.na(dir)) return(list(label = "HOLD", cls = "b-hold", tip = "Trend unavailable (not enough recent hours)"))
+  if (w <= RULE_GO && dir == "falling") return(list(label = "GO", cls = "b-go", tip = sprintf("Wet-bulb %d or colder and falling", RULE_GO)))
+  if (w >= RULE_OFF && dir == "rising") return(list(label = "OFF", cls = "b-off", tip = sprintf("Wet-bulb %d or warmer and rising", RULE_OFF)))
+  if (w > RULE_GO) return(list(label = "WAIT", cls = "b-wait", tip = sprintf("Above %d; go once it is %d or colder and falling", RULE_GO, RULE_GO)))
+  list(label = "HOLD", cls = "b-hold", tip = "Between the trigger points: no change (keep running if already on)")
+}
+
+trend_text <- function(slope, dir, npts) {
+  if (is.na(dir)) return("trend n/a")
+  arrow <- c(falling = "&darr;", rising = "&uarr;", steady = "&rarr;")[[dir]]
+  sprintf("%s %s %+.1f&deg;F/hr <span class='dim'>(%d-h trend)</span>", arrow, dir, slope, max(1, npts - 1))
+}
+
 obs_tile <- function(ft, tcol, rhcol) {
-  if (is.null(obs) || is.na(obs[[tcol]]) || is.na(obs[[rhcol]])) return("")
-  wb <- wetbulb_f(obs[[tcol]], obs[[rhcol]], std_p_hpa(ft))
-  age <- as.numeric(difftime(Sys.time(), obs$t, units = "hours"))
+  L <- obs_level(ft, tcol, rhcol)
+  if (is.null(L) || is.na(L$wb)) return("")
+  age <- as.numeric(difftime(Sys.time(), L$t, units = "hours"))
+  dir <- trend_dir(L$slope)
+  sg <- rule_signal(L$wb, dir, age)
   stale <- if (age > 3) sprintf(" &middot; <b>%.0f h old</b>", age) else ""
-  tile(sprintf("Observed wet-bulb, %s ft", format(ft, big.mark = ",")), sprintf("%.0f&deg;F", wb),
-       sprintf("%s &middot; temp %.0f&deg;F, RH %.0f%% &middot; hour ending %s%s", quality(wb), obs[[tcol]], obs[[rhcol]],
-               format(obs$t, "%a %H:%M"), stale))
+  tile(sprintf("Observed wet-bulb, %s ft", format(ft, big.mark = ",")), sprintf("%.0f&deg;F", L$wb),
+       sprintf("%s<br>%s &middot; temp %.0f&deg;F, RH %.0f%% &middot; hour ending %s%s", trend_text(L$slope, dir, L$npts),
+               quality(L$wb), L$temp, L$rh, format(L$t, "%a %H:%M"), stale),
+       sprintf(" <span class='badge %s' title='%s'>%s</span>", sg$cls, sg$tip, sg$label))
 }
 tiles <- paste0(
   obs_tile(8550, "temp_8550", "rh_8550"), obs_tile(10500, "temp_10500", "rh_10500"),
   tile("Forecast wet-bulb now", sprintf("%.0f&deg;F", now_row$wb), sprintf("%s &middot; temp %.0f&deg;F, RH %.0f%%", now_row$class, now_row$temp_f, now_row$rh)),
-  tile("Next 24 hours", sprintf("%d of %d", good_plus(w24), nrow(w24)), "hours with wet-bulb 27&deg;F or colder"),
-  tile("Next 72 hours", sprintf("%d of %d", good_plus(w72), nrow(w72)), "hours with wet-bulb 27&deg;F or colder"),
+  tile("Next 24 hours", sprintf("%d of %d", good_plus(w24), nrow(w24)), sprintf("hours with wet-bulb %d&deg;F or colder", SNOWMAKING_MAX)),
+  tile("Next 72 hours", sprintf("%d of %d", good_plus(w72), nrow(w72)), sprintf("hours with wet-bulb %d&deg;F or colder", SNOWMAKING_MAX)),
   tile("Best hour, next 72 h", sprintf("%.0f&deg;F", bst$wb), sprintf("%s %02d:00 &middot; %s", day_label(bst$date), bst$hour, bst$src))
 )
 
@@ -189,6 +271,10 @@ h1{margin:0 0 2px;font-size:22px}.sub{color:var(--dim);margin-bottom:6px}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin-bottom:18px}
 .tile{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px}
 .tl{color:var(--dim);font-size:12px}.tv{font-size:28px;font-weight:600}.ts{color:var(--dim);font-size:12px}
+.dim{opacity:.75}
+.badge{display:inline-block;vertical-align:middle;margin-left:6px;padding:2px 9px;border-radius:12px;font-size:12px;font-weight:700;letter-spacing:.03em;color:#fff;cursor:help}
+.b-go{background:#1a7f37}.b-off{background:#c62828}.b-wait{background:#8a5a00}.b-hold{background:#5b6b79}
+.rule{margin:-8px 0 18px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:18px}
 h2{font-size:15px;margin:0 0 10px}
 .scroll{overflow-x:auto}
@@ -219,14 +305,15 @@ table.rc{width:100%;table-layout:fixed;border-spacing:1px;font-size:10.5px}
 #pop .lg{max-width:none;margin-top:8px}
 </style></head><body><main>
 <h1>Alta Snowmaking Outlook</h1>
-<div class="sub">Generated __GEN__ &middot; Open-Meteo HRRR (to ~48 h) then GFS &middot; model elevation __ELEV__</div>
+<div class="sub">Generated __GEN__ &middot; Open-Meteo HRRR (to ~48 h) then GFS &middot; model elevation __ELEV__ &middot; model data pulled __PULLED__</div>
 <div class="disc"><b>Experimental product.</b> Under continuous development; for informational use only.</div>
 <div class="tiles">__TILES__</div>
+<div class="note rule">__RULE__</div>
 <div class="card"><h2>Hourly wet-bulb temperature (&deg;F) &mdash; hour of day across, hours colored by snowmaking quality</h2>
-<div class="stripwrap"><div class="scroll"><table><tr><td class="hd"></td>__HDR__<td class="hd">Hours<br>&le;27&deg;F</td></tr>__ROWS__</table></div>
+<div class="stripwrap"><div class="scroll"><table><tr><td class="hd"></td>__HDR__<td class="hd">Hours<br>&le;__SMAX__&deg;F</td></tr>__ROWS__</table></div>
 <div id="refTile" tabindex="0"><b>Wet-bulb reference chart</b><div class="rtBar"></div><div class="ts">Temperature &times; humidity. Hover or tap to open.</div></div></div>
 __LEGEND__
-<div class="note">The last column counts upcoming hours at 27&deg;F wet-bulb or colder. Faded cells are already past.</div></div>
+<div class="note">The last column counts upcoming hours at __SMAX__&deg;F wet-bulb or colder. Faded cells are already past.</div></div>
 <div class="card"><h2>Model comparison</h2><canvas id="ch"></canvas>
 <div class="note">Wet-bulb computed from temperature, relative humidity and surface pressure. HRRR covers about 48 h; GFS covers the full period. Background shading uses the same colors and bands as the legend above. Hover for temperature, humidity and wind (shown, not scored).</div></div>
 <div id="pop"><div id="popHd"><b>Wet-bulb temperature (&deg;F) by air temperature and relative humidity</b></div><table class="rc">__RCHEAD____RCROWS__</table>__LEGEND__
@@ -285,6 +372,13 @@ new Chart(document.getElementById('ch'),{type:'line',data:{labels:D.labels,datas
 rep <- function(s, k, v) gsub(k, gsub("\\", "\\\\", v, fixed = TRUE), s, fixed = TRUE)
 html <- rep(html, "__GEN__", format(Sys.time(), "%b %d %H:%M %Z", tz = TZ))
 html <- rep(html, "__ELEV__", sprintf("%.0f ft", fc$elev_m * 3.281))
+html <- rep(html, "__PULLED__", format(fc$fetched, "%b %d %H:%M %Z", tz = TZ))
+html <- rep(html, "__SMAX__", as.character(SNOWMAKING_MAX))
+html <- rep(html, "__RULE__", sprintf(paste0(
+  "<b>Snowmaking rule:</b> <b>GO</b> at wet-bulb %d&deg;F or colder and falling &middot; <b>OFF</b> at %d&deg;F or warmer and rising &middot; ",
+  "otherwise HOLD (WAIT while still above %d&deg;F). Trend is the slope of the observed wet-bulb over the last %d hours ",
+  "(steady within &plusmn;%.2g&deg;F/hr). Observations and trend update hourly; model data is pulled every %g hours."),
+  RULE_GO, RULE_OFF, RULE_GO, TREND_HOURS, TREND_FLAT, REFRESH_H))
 leg_vals <- c(11, 12, 14, 16, 18:27, 28, 29)
 leg_txt  <- c("&le;11", leg_vals[2:14], "28", "29+")
 leg_cells <- vapply(seq_along(leg_vals), function(i) {

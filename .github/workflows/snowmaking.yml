@@ -2,12 +2,13 @@ name: Alta snowmaking
 
 on:
   schedule:
-    # 6 pulls/day, every 4 hours (UTC clock; GitHub may start a run a few minutes late)
-    - cron: "17 1,5,9,13,17,21 * * *"
+    # Hourly, 17 min past (the roundup scraper runs at :03). Observations + trend refresh every run;
+    # model data is re-pulled only when the cache is ~4 h old (see REFRESH_H in snowmaking.R).
+    - cron: "17 * * * *"
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -29,8 +30,15 @@ jobs:
         with:
           packages: any::httr any::jsonlite
 
-      - name: Pull forecasts and build dashboard
+      - name: Update observations/trend, pull models if due, build dashboard
         run: Rscript snowmaking.R
+
+      - name: Commit model-data cache
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/forecast_cache.csv
+          git diff --cached --quiet || (git commit -m "Update forecast cache" && git pull --rebase && git push)
 
       - name: Prepare site
         run: cp output/snowmaking.html output/index.html
